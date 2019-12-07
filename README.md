@@ -151,3 +151,6 @@ I use something like the followin in `/etc/dhcpcd.conf`:
                   #respond isn't very helpful here
 
         noipv6    #< I know my ISP doesn't assign any v6 addrs anyways
+
+        # don't mess with hostname and dns
+        nohook 20-resolv.conf,30-hostname
