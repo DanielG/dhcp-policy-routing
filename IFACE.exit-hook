@@ -12,18 +12,26 @@ set -eu
 # echo
 # echo
 
-case $reason in
-    BOUND | RENEW | REBIND | REBOOT)
-	ARR_new_routers=( $new_routers )
-	[ ${#ARR_new_routers[@]} -le 1 ] \
-            || echo "WARNING: $interface, multiple routers not supported">&2
-
+old () {
 	if [ -n "${old_ip_address:-}" ]; then
            ip rule del from $old_ip_address table pub || true
 	fi
         ip route flush table pub
+}
+
+new () {
+	ARR_new_routers=( $new_routers )
+	[ ${#ARR_new_routers[@]} -le 1 ] \
+            || echo "WARNING: $interface, multiple routers not supported">&2
 
 	ip rule add from $new_ip_address table pub
 	ip route add default via ${ARR_new_routers[0]} table pub
-	;;
+}
+
+case $reason in
+    BOUND | RENEW | REBIND | REBOOT)
+            old; new ;;
+
+    EXPIRE | FAIL | RELEASE)
+            old;;
 esac
