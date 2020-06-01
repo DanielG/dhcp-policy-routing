@@ -26,10 +26,10 @@ though an additional cable would work just as well ;)
 ## DHCP / MACVLAN
 
 In my particular case the DOCSIS modem is very picky about how many public
-addresses it will give out via DHCP out and will just stop responding to
-DHCP requests once the limit is reached. It is also _very_ persistent about
-this MAC-IP associaction. It seems only a factory reset will dissolve it,
-or the lease time is very long.
+addresses it will give out via DHCP and will just stop responding to DHCP
+requests once the limit is reached. It is also _very_ persistent about this
+MAC-IP associaction. It seems only a factory reset will dissolve it, or the
+lease time is very long.
 
 For this reason I use a set of locall administered, static, MAC addresses
 instead of the normal interface MACs on the modem VLAN. This is
@@ -99,7 +99,8 @@ names instead of the raw ids. The range of ID values you can choose is
 `1-253`.
 
 The accompanying script [`IFACE.exit-hook`](./IFACE.exit-hook) implements
-the reset by running two simple commands whenever the dhcp lease changes:
+the rest of the required functionality by running two simple commands
+whenever the dhcp lease changes:
 
     ip rule add from $new_ip_address table pub
     ip route add default via $new_router table pub
@@ -116,7 +117,8 @@ This is a replacement for Debian's old-school /etc/network/interfaces
 aka. ifupdown stuff. If you prefer `interfaces(5)` you can also opt to use
 the included script with `dhclient(8)`.
 
-Anyways, make dhcpcd run `/etc/dhcpcd/$interface.exit-hook`:
+Anyways, to make dhcpcd run a per-interface script
+`/etc/dhcpcd/$interface.exit-hook` we use this dispatch exit-hook script:
 
     $ cat > /etc/dhcpcd.exit-hook <<EOF
     #!/bin/sh
@@ -133,7 +135,8 @@ Finally install the policy routing exit-hook:
     $ mkdir -p /etc/dhcpcd
     $ cp IFACE.exit-hook /etc/dhcpcd/eth0v0.exit-hook
 
-And there you go.
+Remember to replace eth0v0 by your macvlan interface name or similar and
+there you go.
 
 Don't forget to go though the general dhcpcd config, by default it will
 just do DHCPv{4,6}, IPv4LL etc. on all interfaces. It could also conflict
