@@ -11,42 +11,15 @@ addresses.
 This makes routing these in addition to your normal, private IPs, all via
 your normal gateway a bit of a challange.
 
-While this certainly could be done it seems overly complicated to me. Sure
-you could setup a script that dynamically manages the address pool your
-DHCP server is handing out to clients, but since you likely want to just
-hand these out to a select few server machienes it's just not necessary and
-does just add another single point of failure.
+While this certainly could be done it seems less than ideal to me. Sure you
+could set up a script that dynamically manages the address pool your DHCP
+server is handing out to clients, but since I just want to hand these out
+to a select few server machienes anyway it's just not necessary and the
+router would be another single point of failure.
 
-Instead my solution is just to connect the machienes which should get one
-of these public address "directly" to the modem via a VLAN on my switch,
+Instead my solution is to connect the machienes which should get one of
+these public address "directly" to the modem via a VLAN on my switch,
 though an additional cable would work just as well ;)
-
-
-
-## DHCP / MACVLAN
-
-In my particular case the DOCSIS modem is very picky about how many public
-addresses it will give out via DHCP and will just stop responding to DHCP
-requests once the limit is reached. It is also _very_ persistent about this
-MAC-IP associaction. It seems only a factory reset will dissolve it, or the
-lease time is very long.
-
-For this reason I use a set of locall administered, static, MAC addresses
-instead of the normal interface MACs on the modem VLAN. This is
-accomplished by using macvlan intearfaces.
-
-In my case the macvlan is stacked on top of a VLAN interface but for
-simplicity's sake let's just call the underlying interface "eth0" since it
-doesn't make a difference:
-
-    ip link add link eth0 name eth0v0 address 02:RA:ND:OM:1M:AC \
-        type macvlan mode private
-
-Replace 02:RA:ND:OM:1M:AC with a random, preferably locally administered
-MAC address. Protip: Leaving the first byte as "02" is an easy way of
-setting the "locally administered" flag without bit fiddling.
-
-
 
 ## Routing
 
@@ -61,99 +34,89 @@ not so in our case though.
 
 Fortunately the Linux kernel has facilities for crazy use-cases such as
 this. The general concept we need to apply is called "policy routing" or
-more specifically "source routing" where the source address of a packet
-additionally determines to which router and out which interface it should
-be sent.
+more specifically "source-specific routing" where the source address of a
+packet additionally determines to which router and out which interface it
+should be sent.
 
-The idea is we tell the kernel:
+The idea is simple, we tell the kernel:
 
 > Every outgoing packet with a source address matching the public IP we got
-> should be sent out via the interface it came in on.
+> must be sent out via the interface having this address.
 
-And that's what the script `IFACE.exit-hook` accomplishes.
+We do this by setting up one routing table for each interface which only
+contains a default route pointing at the gateway. We then use ip-rule
+policy routing to direct packets to the right table when we want to force
+them to egress via a particular interface.
 
-
-
-## Setup
-
-> TODO: Just a rough sketch, report issues if this is unclear
-
-Add a new routing table-ID to name association:
-
-    $ echo 123 pub >> /etc/iproute2/rt_tables
-    $ cat /etc/iproute2/rt_tables
-    #
-    # reserved values
-    #
-    255	local
-    254	main
-    253	default
-    0	unspec
-    #
-    # local
-    #
-    123 pub
-
-This is technically optional, it's just used by `ip(8)` to display pretty
-names instead of the raw ids. The range of ID values you can choose is
-`1-253`.
-
-The accompanying script [`IFACE.exit-hook`](./IFACE.exit-hook) implements
-the rest of the required functionality by running two simple commands
-whenever the dhcp lease changes:
-
-    ip rule add from $new_ip_address table pub
-    ip route add default via $new_router table pub
-
-For details on Policy Routing on Linux see
+For details on Linux Policy Routing see
 http://linux-ip.net/html/routing-rpdb.html, the rest of that site is also
 very helpful for IP routing on Linux in general.
 
-To install that part install and configure dhcpcd, on Debian:
+## Setup
 
-    $ apt-get install dhcpcd5
+Copy the accompanying script [`multihomed`](./multihomed) to `/etc/dhcp/`
+and symlink it to `/etc/dhcp/dhclient-exit-hooks.d`.
 
-This is a replacement for Debian's old-school /etc/network/interfaces
-aka. ifupdown stuff. If you prefer `interfaces(5)` you can also opt to use
-the included script with `dhclient(8)`.
+The script will then add policy rules for all dhcp interface
+undiscriminately. Report an issue if this doesn't work for you.
 
-Anyways, to make dhcpcd run a per-interface script
-`/etc/dhcpcd/$interface.exit-hook` we use this dispatch exit-hook script:
+Optionally it also supports setting up FWMARK based rules for WireGuard
+which doesn't (yet) allow binding it's UDP socket to an interface, but it
+does support fwmarks.
 
-    $ cat > /etc/dhcpcd.exit-hook <<EOF
-    #!/bin/sh
+To enable this you can use an `multihomed-fwmark <some-0xf00-hex-id>`
+stanza in `/etc/network/interfaces`. We use `ifquery` to get an interface's
+options.
 
-    if [ -x /etc/dhcpcd/$interface.exit-hook ]; then
-        /etc/dhcpcd/$interface.exit-hook
-    fi
-    EOF
+The script will also run hooks in /etc/dhcp/multihomed.d using
+`run-parts(8)` whenever the interface address might have changed. I use
+this to implement a workaround for WireGuard via a shitty 5G modem's NAT
+implementation.
 
-No idea why they don't just have something like this by default.
+## Policy Route Details
 
-Finally install the policy routing exit-hook:
+Here's an example configuration and the rules we will
+install. In `/etc/network/interfaces` we have:
 
-    $ mkdir -p /etc/dhcpcd
-    $ cp IFACE.exit-hook /etc/dhcpcd/eth0v0.exit-hook
+    auto enp1s0
+    iface enp1s0 inet dhcp
+    	metric 1024
 
-Remember to replace eth0v0 by your macvlan interface name or similar and
-there you go.
+    auto  enp2s0.5
+    iface enp2s0.5 inet dhcp
+    	metric 2048
+    	multihomed-fwmark 0x2005
 
-Don't forget to go though the general dhcpcd config, by default it will
-just do DHCPv{4,6}, IPv4LL etc. on all interfaces. It could also conflict
-with `interfaces(5)` config, not sure. For all you know it might eat your
-babies so RTFM.
+Here we use the `metric` setting to determine which interface is used by
+default (greater number is less preferred).
 
-I use something like the followin in `/etc/dhcpcd.conf`:
+And the resulting rules and per-interface route tables are as follows:
 
-    allowinterfaces eth0,eth0v0
-    interface eth0v0
-        nogateway #< Adding a default route for this interface in the main
-                  # routing table doesn't help things
+    $ ip rule
+    32752:	from all fwmark 0x2005 lookup main suppress_prefixlength 0
+    32753:	from all fwmark 0x2005 lookup 16909060
+    32754:	from all fwmark 0x2005 unreachable
+    32755:	from 1.2.3.4 lookup main suppress_prefixlength 0
+    32756:	from 1.2.3.4 lookup 16909060
+    32757:	from 192.168.42.222 lookup main suppress_prefixlength 0
+    32758:	from 192.168.42.222 lookup 3232246494
+    32766:	from all lookup main
+    32767:	from all lookup default
 
-        noipv4ll  #< Having some random IP on the interface if DHCP doesn't
-                  #respond isn't very helpful here
+    $ ip route show table 3232246494
+    default via 192.168.42.1 dev enp1s0
 
-        noipv6    #< I know my ISP doesn't assign any v6 addrs anyways
+    $ ip route show table 16909060
+    default via 1.2.3.1 dev enp2s0.5
+    
+Notice that the `lookup` aka. table IDs are just the 32-bit integer
+representation of the associated IP address.
 
-        # don't mess with hostname and dns
-        nohook 20-resolv.conf,30-hostname
+The `lookup main suppress_prefixlength 0` rules are interesting too. See if
+we only insert the per-interface table lookup rules LAN destinations will
+become unreachable which is not quite what you'd want usually.
+
+To fix this we use the `suppress_prefixlength 0` match. When the default
+route matches in the lookup table it is ignored and policy rule evaluation
+continues. In effect you get uniform access to local LAN subnets while
+still routing via the right interface for global destinations.

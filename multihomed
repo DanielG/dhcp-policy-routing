@@ -1,0 +1,71 @@
+#!/bin/sh
+# Install into /etc/dhcp and symlink to /etc/dhcp/dhclient-exit-hooks.d
+
+# Copyright 2022, Daniel Gröber
+#
+# Copying and distribution of this file, with or without modification, are
+# permitted in any medium without royalty, provided the copyright notice and
+# this notice are preserved. This file is offered as-is, without any
+# warranty.
+#
+# SPDX-License-Identifier: FSFAP
+
+mh_calc_table_id () {
+	IFS=. read -r a b c d <<-EOF
+	      $1
+	EOF
+        TABLE_ID=$(( (a<<24) | (b<<16) | (c<<8) | d))
+	[ "$TABLE_ID" -gt 255 ] || return 1
+}
+
+multihomed_old () {
+	if [ -n "${old_ip_address:-}" ]; then
+		mh_calc_table_id "$old_ip_address" || return
+		while ip rule del table "$TABLE_ID" >/dev/null 2>&1; do :; done
+		ip rule del from "$old_ip_address" suppress_prefixlength 0
+		ip route flush table "$TABLE_ID"
+	fi
+	if [ -n "$fwmark" ]; then
+		while ip rule del fwmark "$fwmark" suppress_prefixlength 0 >/dev/null 2>&1; do :; done
+		while ip rule del fwmark "$fwmark" unreachable >/dev/null 2>&1; do :; done
+	fi
+}
+
+multihomed_new () {
+	mh_calc_table_id "$new_ip_address" || return
+	ip rule add from "$new_ip_address" table "$TABLE_ID"
+	ip rule add from "$new_ip_address" suppress_prefixlength 0
+	#^ alternative: suppress_ifgroup wan
+
+	if [ -n "$fwmark" ]; then
+		ip rule add fwmark "$fwmark" unreachable
+		ip rule add fwmark "$fwmark" table "$TABLE_ID"
+		ip rule add fwmark "$fwmark" suppress_prefixlength 0
+	fi
+
+        for router in $new_routers; do
+	        ip route add default via "$router" table "$TABLE_ID"
+		break; # only one default router supported
+        done
+
+	IFACE=$interface FWMARK=$fwmark TABLE_ID=$TABLE_ID \
+	      run-parts /etc/dhcp/multihomed.d || true
+}
+
+do_multihomed () {
+	IFQ=$(ifquery "$interface") || unset IFQ
+	if [ -n "$IFQ" ]; then
+		fwmark=$(printf '%s\n' "$IFQ" \
+				 | awk '/^multihomed-fwmark:/{ print $2 }')
+	fi
+
+        case "$reason" in
+	        BOUND|REBOOT)
+		        multihomed_old; multihomed_new ;;
+		RENEW|REBIND) ;;
+	        EXPIRE|FAIL|RELEASE|STOP)
+                        multihomed_old;;
+        esac
+}
+
+do_multihomed

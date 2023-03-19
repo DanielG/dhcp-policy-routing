@@ -1,6 +1,0 @@
-#!/bin/sh
-# This script is sourced by dhcpcd-run-hooks(8)!
-
-if [ -x /etc/dhcpcd/$interface.exit-hook ]; then
-    /etc/dhcpcd/$interface.exit-hook
-fi
