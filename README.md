@@ -14,10 +14,10 @@ your normal gateway a bit of a challange.
 While this certainly could be done it seems less than ideal to me. Sure you
 could set up a script that dynamically manages the address pool your DHCP
 server is handing out to clients, but since I just want to hand these out
-to a select few server machienes anyway it's just not necessary and the
+to a select few server machines anyway it's just not necessary and the
 router would be another single point of failure.
 
-Instead my solution is to connect the machienes which should get one of
+Instead my solution is to connect the machines which should get one of
 these public address "directly" to the modem via a VLAN on my switch,
 though an additional cable would work just as well ;)
 
